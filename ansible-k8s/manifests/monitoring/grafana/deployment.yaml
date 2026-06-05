@@ -7,6 +7,10 @@ metadata:
     app: grafana
 spec:
   replicas: 1
+  # PVC ReadWriteOnce: evitar que el pod nuevo y el viejo monten a la vez la PVC
+  # durante un rollout (RollingUpdate). Recreate mata el viejo antes de crear el nuevo.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: grafana

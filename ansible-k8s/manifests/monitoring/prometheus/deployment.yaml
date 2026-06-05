@@ -7,6 +7,11 @@ metadata:
     app: prometheus
 spec:
   replicas: 1
+  # PVC ReadWriteOnce + TSDB: el pod nuevo no puede bloquear el directorio de datos
+  # mientras el viejo sigue vivo (RollingUpdate), lo que provoca CrashLoopBackOff
+  # con exit 1 hasta que el pod anterior muere. Recreate evita el solape.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: prometheus
