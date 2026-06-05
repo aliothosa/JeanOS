@@ -3,6 +3,10 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+# Kaniko estaba matando el build por OOMKilled en el nodo (memoria insuficiente).
+# Limitamos el heap de Node para reducir el pico de RAM durante npm/ng build.
+ENV NODE_OPTIONS="--max_old_space_size=1400"
+
 # Instalar dependencias primero (cache layer)
 COPY package.json ./
 RUN npm install --legacy-peer-deps
