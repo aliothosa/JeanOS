@@ -5,6 +5,14 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const { createClient } = require('redis');
 const client = require('prom-client');
+const {
+  CACHE_KEYS,
+  normalizeClassSlug,
+  fetchClasses,
+  classExists,
+  fetchProducts,
+  fetchProductDetail,
+} = require('./lib/catalog');
 
 const register = new client.Registry();
 client.collectDefaultMetrics({ register });
@@ -90,6 +98,146 @@ function recordComparatorMetrics(statusCode, source, durationSec) {
   comparatorDuration.observe(labels, durationSec);
 }
 
+function mapCompareProduct(row) {
+  return {
+    id: row.id,
+    nombre: row.nombre,
+    marca: row.marca,
+    modelo: row.modelo,
+    precio: Number(row.precio),
+  };
+}
+
+function buildComparePayload(productRows, specRows, requestOrder) {
+  const byId = new Map(productRows.map((r) => [r.id, r]));
+  const products = requestOrder.map((id) => mapCompareProduct(byId.get(id)));
+
+  const classRow = productRows[0];
+  const classInfo = {
+    id: classRow.clase_id,
+    slug: classRow.clase_slug,
+    nombre: classRow.clase_nombre,
+  };
+
+  const specsByKey = new Map();
+
+  for (const row of specRows) {
+    if (!specsByKey.has(row.spec_key)) {
+      specsByKey.set(row.spec_key, {
+        key: row.spec_key,
+        label: row.label,
+        unit: row.unit,
+        sort_order: row.sort_order,
+        values: [],
+      });
+    }
+
+    const entry = specsByKey.get(row.spec_key);
+    if (row.producto_id != null) {
+      entry.values.push({
+        product_id: row.producto_id,
+        value: specValueFromParts(
+          row.data_type,
+          row.valor_texto,
+          row.valor_numero,
+          row.valor_booleano,
+        ),
+      });
+    }
+  }
+
+  const specs = [...specsByKey.values()]
+    .sort((a, b) => a.sort_order - b.sort_order)
+    .map(({ sort_order, ...rest }) => rest);
+
+  const [a, b] = products;
+  const cheapest = a.precio <= b.precio ? a : b;
+
+  return {
+    class: classInfo,
+    products,
+    specs,
+    price_difference: Math.abs(a.precio - b.precio),
+    cheapest_product: {
+      id: cheapest.id,
+      nombre: cheapest.nombre,
+      precio: cheapest.precio,
+    },
+  };
+}
+
+function specValueFromParts(dataType, valorTexto, valorNumero, valorBooleano) {
+  if (dataType === 'boolean') {
+    return valorBooleano;
+  }
+  if (dataType === 'number') {
+    return valorNumero != null ? Number(valorNumero) : null;
+  }
+  return valorTexto;
+}
+
+/** Lectura Redis tolerante a fallos: null = miss → PostgreSQL */
+async function redisGet(key) {
+  try {
+    if (!redisClient.isReady) {
+      return null;
+    }
+    return await redisClient.get(key);
+  } catch (err) {
+    console.error('Redis GET falló:', err.message);
+    return null;
+  }
+}
+
+async function redisTtl(key) {
+  try {
+    if (!redisClient.isReady) {
+      return null;
+    }
+    const ttl = await redisClient.ttl(key);
+    return ttl >= 0 ? ttl : null;
+  } catch (err) {
+    console.error('Redis TTL falló:', err.message);
+    return null;
+  }
+}
+
+/** Escritura Redis best-effort; no bloquea la respuesta */
+async function redisSetEx(key, payload) {
+  try {
+    if (!redisClient.isReady) {
+      return;
+    }
+    await redisClient.setEx(key, CACHE_TTL_SECONDS, payload);
+  } catch (err) {
+    console.error('Redis SET falló:', err.message);
+  }
+}
+
+async function respondCached(route, res, cacheKey, loadFromDb) {
+  const cached = await redisGet(cacheKey);
+
+  if (cached) {
+    recordCacheHit(route, 'redis');
+    const ttl = await redisTtl(cacheKey);
+    return res.json({
+      source: 'redis',
+      ttl_seconds: ttl ?? CACHE_TTL_SECONDS,
+      data: JSON.parse(cached),
+    });
+  }
+
+  recordCacheMiss(route, 'postgresql');
+  const data = await loadFromDb();
+  await redisSetEx(cacheKey, JSON.stringify(data));
+
+  return res.json({
+    source: 'postgresql',
+    ttl_seconds: CACHE_TTL_SECONDS,
+    data,
+  });
+}
+
 const app = express();
 
 app.use(cors());
@@ -150,8 +298,14 @@ app.get('/readyz', async (req, res) => {
   try {
     await pool.query('SELECT 1');
 
-    if (!redisClient.isReady) {
-      throw new Error('Redis no está conectado');
+    const redisOk = redisClient.isReady;
+    if (!redisOk) {
+      return res.status(503).json({
+        status: 'not_ready',
+        postgres: 'ok',
+        redis: 'disconnected',
+        error: 'Redis no está conectado',
+      });
     }
 
     res.status(200).json({
@@ -167,41 +321,51 @@ app.get('/readyz', async (req, res) => {
   }
 });
 
+app.get('/api/classes', async (req, res) => {
+  const route = '/api/classes';
+
+  try {
+    await respondCached(route, res, CACHE_KEYS.classesAll, () => fetchClasses(pool));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/products', async (req, res) => {
   const route = '/api/products';
 
   try {
-    const cacheKey = 'productos:all';
-    const cached = await redisClient.get(cacheKey);
+    const hasClassParam =
+      req.query.class != null && String(req.query.class).trim() !== '';
 
-    if (cached) {
-      recordCacheHit(route, 'redis');
-      return res.json({
-        source: 'redis',
-        ttl_seconds: await redisClient.ttl(cacheKey),
-        data: JSON.parse(cached),
-      });
+    if (hasClassParam) {
+      const classSlug = normalizeClassSlug(req.query.class);
+
+      if (classSlug === false) {
+        return res.status(400).json({
+          error: 'Parámetro class inválido',
+          code: 'INVALID_CLASS_PARAM',
+          details: { class: String(req.query.class) },
+        });
+      }
+
+      const exists = await classExists(pool, classSlug);
+      if (!exists) {
+        return res.status(404).json({
+          error: 'Clase no encontrada',
+          code: 'CLASS_NOT_FOUND',
+          details: { class: classSlug },
+        });
+      }
+
+      const cacheKey = CACHE_KEYS.productsByClass(classSlug);
+      await respondCached(route, res, cacheKey, () => fetchProducts(pool, classSlug));
+      return;
     }
 
-    recordCacheMiss(route, 'postgresql');
-
-    const result = await pool.query(`
-      SELECT id, nombre, precio
-      FROM productos
-      ORDER BY id;
-    `);
-
-    await redisClient.setEx(cacheKey, CACHE_TTL_SECONDS, JSON.stringify(result.rows));
-
-    res.json({
-      source: 'postgresql',
-      ttl_seconds: CACHE_TTL_SECONDS,
-      data: result.rows,
-    });
+    await respondCached(route, res, CACHE_KEYS.productsAll, () => fetchProducts(pool));
   } catch (err) {
-    res.status(500).json({
-      error: err.message,
-    });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -214,46 +378,42 @@ app.get('/api/products/:id', async (req, res) => {
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({
         error: 'ID inválido',
+        code: 'INVALID_PRODUCT_ID',
       });
     }
 
-    const cacheKey = `producto:${id}`;
-    const cached = await redisClient.get(cacheKey);
+    const cacheKey = CACHE_KEYS.productDetails(id);
+    const cached = await redisGet(cacheKey);
 
     if (cached) {
       recordCacheHit(route, 'redis');
+      const ttl = await redisTtl(cacheKey);
       return res.json({
         source: 'redis',
-        ttl_seconds: await redisClient.ttl(cacheKey),
+        ttl_seconds: ttl ?? CACHE_TTL_SECONDS,
         data: JSON.parse(cached),
       });
     }
 
     recordCacheMiss(route, 'postgresql');
 
-    const result = await pool.query(`
-      SELECT id, nombre, precio
-      FROM productos
-      WHERE id = $1;
-    `, [id]);
-
-    if (result.rows.length === 0) {
+    const data = await fetchProductDetail(pool, id);
+    if (!data) {
       return res.status(404).json({
         error: 'Producto no encontrado',
+        code: 'PRODUCT_NOT_FOUND',
       });
     }
 
-    await redisClient.setEx(cacheKey, CACHE_TTL_SECONDS, JSON.stringify(result.rows[0]));
+    await redisSetEx(cacheKey, JSON.stringify(data));
 
     res.json({
       source: 'postgresql',
       ttl_seconds: CACHE_TTL_SECONDS,
-      data: result.rows[0],
+      data,
     });
   } catch (err) {
-    res.status(500).json({
-      error: err.message,
-    });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -269,72 +429,140 @@ app.post('/api/compare', async (req, res) => {
   try {
     const { ids } = req.body;
 
-    if (!Array.isArray(ids) || ids.length < 2) {
+    if (!Array.isArray(ids) || ids.length !== 2) {
       finishCompare(400, 'none');
       return res.status(400).json({
-        error: 'Envía al menos 2 IDs en el campo ids[]',
+        error: 'Debes enviar exactamente 2 IDs en el campo ids',
+        code: 'COMPARE_EXACTLY_TWO_IDS',
+        details: { received_count: Array.isArray(ids) ? ids.length : 0 },
         example: { ids: [1, 2] },
       });
     }
 
-    const cleanIds = [...new Set(ids.map(Number))]
-      .filter((id) => Number.isInteger(id) && id > 0)
-      .sort((a, b) => a - b);
+    const idA = Number(ids[0]);
+    const idB = Number(ids[1]);
 
-    if (cleanIds.length < 2) {
+    if (
+      !Number.isInteger(idA) ||
+      !Number.isInteger(idB) ||
+      idA <= 0 ||
+      idB <= 0
+    ) {
       finishCompare(400, 'none');
       return res.status(400).json({
-        error: 'Los IDs deben ser números enteros positivos',
+        error: 'Los IDs deben ser dos enteros positivos',
+        code: 'COMPARE_INVALID_IDS',
+        details: { ids },
       });
     }
 
-    const cacheKey = `compare:${cleanIds.join('-')}`;
-    const cached = await redisClient.get(cacheKey);
+    if (idA === idB) {
+      finishCompare(400, 'none');
+      return res.status(400).json({
+        error: 'Los IDs deben ser dos enteros positivos distintos',
+        code: 'COMPARE_INVALID_IDS',
+        details: { ids },
+      });
+    }
+
+    const orderedIds = [idA, idB].sort((a, b) => a - b);
+    const requestOrder = [idA, idB];
+    const cacheKey = CACHE_KEYS.compare(orderedIds[0], orderedIds[1]);
+    const cached = await redisGet(cacheKey);
 
     if (cached) {
       recordCacheHit(route, 'redis');
       finishCompare(200, 'redis');
+      const ttl = await redisTtl(cacheKey);
       return res.json({
         source: 'redis',
-        ttl_seconds: await redisClient.ttl(cacheKey),
+        ttl_seconds: ttl ?? CACHE_TTL_SECONDS,
         data: JSON.parse(cached),
       });
     }
 
     recordCacheMiss(route, 'postgresql');
 
-    const placeholders = cleanIds.map((_, i) => `$${i + 1}`).join(', ');
+    const productResult = await pool.query(
+      `
+      SELECT
+        p.id,
+        p.nombre,
+        p.marca,
+        p.modelo,
+        p.precio,
+        p.clase_id,
+        cp.slug AS clase_slug,
+        cp.nombre AS clase_nombre
+      FROM productos p
+      INNER JOIN clases_producto cp ON cp.id = p.clase_id
+      WHERE p.id = $1 OR p.id = $2;
+      `,
+      orderedIds,
+    );
 
-    const result = await pool.query(`
-      SELECT id, nombre, precio
-      FROM productos
-      WHERE id IN (${placeholders})
-      ORDER BY precio ASC;
-    `, cleanIds);
+    const foundIds = productResult.rows.map((r) => r.id);
+    const missingIds = orderedIds.filter((pid) => !foundIds.includes(pid));
 
-    const productos = result.rows;
-
-    if (productos.length < 2) {
+    if (missingIds.length > 0) {
       finishCompare(404, 'none');
       return res.status(404).json({
-        error: 'No se encontraron suficientes productos para comparar',
-        requested_ids: cleanIds,
+        error: 'Uno o más productos no existen',
+        code: 'COMPARE_PRODUCT_NOT_FOUND',
+        details: {
+          requested_ids: orderedIds,
+          missing_ids: missingIds,
+        },
       });
     }
 
-    const cheapest = productos[0];
-    const mostExpensive = productos[productos.length - 1];
+    const classIds = [...new Set(productResult.rows.map((r) => r.clase_id))];
 
-    const comparison = {
-      requested_ids: cleanIds,
-      count: productos.length,
-      cheapest,
-      most_expensive: mostExpensive,
-      price_difference: Number(mostExpensive.precio) - Number(cheapest.precio),
-      products: productos,
-    };
+    if (classIds.length > 1) {
+      finishCompare(400, 'none');
+      return res.status(400).json({
+        error: 'Solo puedes comparar productos de la misma clase',
+        code: 'COMPARE_CLASS_MISMATCH',
+        details: {
+          requested_ids: orderedIds,
+          classes: productResult.rows.map((r) => ({
+            product_id: r.id,
+            slug: r.clase_slug,
+            nombre: r.clase_nombre,
+          })),
+        },
+      });
+    }
 
-    await redisClient.setEx(cacheKey, CACHE_TTL_SECONDS, JSON.stringify(comparison));
+    const specResult = await pool.query(
+      `
+      SELECT
+        sd.spec_key,
+        sd.label,
+        sd.unit,
+        sd.data_type,
+        sd.sort_order,
+        ps.producto_id,
+        ps.valor_texto,
+        ps.valor_numero,
+        ps.valor_booleano
+      FROM spec_definitions sd
+      LEFT JOIN producto_specs ps
+        ON ps.spec_definition_id = sd.id
+        AND ps.producto_id IN ($1, $2)
+      WHERE sd.clase_id = $3
+      ORDER BY sd.sort_order;
+      `,
+      [orderedIds[0], orderedIds[1], classIds[0]],
+    );
+
+    const comparison = buildComparePayload(
+      productResult.rows,
+      specResult.rows,
+      requestOrder,
+    );
+
+    await redisSetEx(cacheKey, JSON.stringify(comparison));
 
     finishCompare(200, 'postgresql');
     res.json({
@@ -344,19 +572,21 @@ app.post('/api/compare', async (req, res) => {
     });
   } catch (err) {
     finishCompare(500, 'none');
-    res.status(500).json({
-      error: err.message,
-    });
+    res.status(500).json({ error: err.message });
   }
 });
 
 async function start() {
   try {
-    await redisClient.connect();
-    console.log('Redis conectado');
-
     await pool.query('SELECT 1');
     console.log('PostgreSQL conectado');
+
+    try {
+      await redisClient.connect();
+      console.log('Redis conectado');
+    } catch (err) {
+      console.error('Redis no disponible al arranque (API usará solo PostgreSQL):', err.message);
+    }
 
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`Backend jeanOS Shop escuchando en puerto ${PORT}`);

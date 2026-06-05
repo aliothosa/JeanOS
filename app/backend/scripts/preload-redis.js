@@ -1,14 +1,21 @@
 /**
- * Precarga el catálogo desde PostgreSQL hacia Redis (init container / one-shot).
- * Claves alineadas con app/backend/index.js: productos:all, producto:{id}
+ * Precarga catálogo PostgreSQL → Redis (init container).
+ * Keys idénticas a index.js vía lib/catalog.js (CACHE_KEYS).
  */
 require('dotenv').config();
 
 const { Pool } = require('pg');
 const { createClient } = require('redis');
+const {
+  CACHE_KEYS,
+  fetchClasses,
+  fetchClassSlugs,
+  fetchProducts,
+  fetchProductIds,
+  fetchProductDetail,
+} = require('../lib/catalog');
 
 const CACHE_TTL_SECONDS = parseInt(process.env.CACHE_TTL_SECONDS || '3600', 10);
-const CATALOG_KEY = 'productos:all';
 
 const pool = new Pool({
   host: process.env.DB_HOST || 'localhost',
@@ -29,10 +36,6 @@ redisClient.on('error', (err) => {
   console.error('[preload] Redis error:', err.message);
 });
 
-function productKey(id) {
-  return `producto:${id}`;
-}
-
 async function shutdown(exitCode) {
   try {
     if (redisClient.isReady) await redisClient.quit();
@@ -47,6 +50,78 @@ async function shutdown(exitCode) {
   process.exit(exitCode);
 }
 
+function fail(message) {
+  console.error(`[preload] ERROR: ${message}`);
+  return shutdown(1);
+}
+
+async function connectPostgreSQL() {
+  console.log('[preload] Conectando PostgreSQL...');
+  try {
+    await pool.query('SELECT 1');
+    console.log('[preload] PostgreSQL conectado');
+  } catch (err) {
+    await fail(`PostgreSQL no disponible: ${err.message}`);
+  }
+}
+
+async function connectRedis() {
+  console.log('[preload] Conectando Redis...');
+  try {
+    await redisClient.connect();
+    console.log('[preload] Redis conectado');
+  } catch (err) {
+    await fail(`Redis no disponible: ${err.message}`);
+  }
+}
+
+function assertProductShape(product, context) {
+  const required = ['id', 'nombre', 'marca', 'modelo', 'precio', 'clase'];
+  for (const field of required) {
+    if (product[field] == null) {
+      throw new Error(`${context}: falta campo "${field}" en producto id=${product.id}`);
+    }
+  }
+  if (!product.clase.id || !product.clase.slug || !product.clase.nombre) {
+    throw new Error(`${context}: objeto clase incompleto en producto id=${product.id}`);
+  }
+}
+
+function validateCatalogData(classes, allProducts, slugs, detailsById) {
+  if (classes.length === 0) {
+    throw new Error('no hay filas en clases_producto');
+  }
+
+  if (allProducts.length === 0) {
+    throw new Error('no hay filas en productos');
+  }
+
+  for (const product of allProducts) {
+    assertProductShape(product, 'products:all');
+  }
+
+  for (const slug of slugs) {
+    const count = allProducts.filter((p) => p.clase.slug === slug).length;
+    if (count === 0) {
+      throw new Error(`la clase "${slug}" no tiene productos`);
+    }
+  }
+
+  for (const [id, detail] of detailsById) {
+    if (!detail) {
+      throw new Error(`detalle no encontrado para producto id=${id}`);
+    }
+    assertProductShape(detail, `product:${id}:details`);
+    if (!Array.isArray(detail.specs) || detail.specs.length === 0) {
+      throw new Error(`producto id=${id} sin specs en product:${id}:details`);
+    }
+  }
+}
+
+async function writeCache(key, payload) {
+  await redisClient.setEx(key, CACHE_TTL_SECONDS, JSON.stringify(payload));
+}
+
 async function main() {
   const pgHost = process.env.DB_HOST || 'localhost';
   const pgPort = process.env.DB_PORT || '5432';
@@ -57,48 +132,76 @@ async function main() {
   console.log('[preload] Iniciando precarga Redis');
   console.log(`[preload] PostgreSQL → ${pgHost}:${pgPort}/${pgDb}`);
   console.log(`[preload] Redis → ${redisHost}:${redisPort}`);
+  console.log(`[preload] TTL → ${CACHE_TTL_SECONDS}s`);
 
   try {
-    console.log('[preload] Conectando PostgreSQL...');
-    await pool.query('SELECT 1');
-    console.log('[preload] PostgreSQL conectado');
+    await connectPostgreSQL();
 
-    const result = await pool.query(`
-      SELECT id, nombre, precio
-      FROM productos
-      ORDER BY id;
-    `);
-    const rows = result.rows;
-    console.log(`[preload] Productos encontrados: ${rows.length}`);
+    const classes = await fetchClasses(pool);
+    const productIds = await fetchProductIds(pool);
+    const slugs = await fetchClassSlugs(pool);
+    const allProducts = await fetchProducts(pool);
 
-    if (rows.length === 0) {
-      console.error('[preload] No hay productos en la tabla; abortando');
-      await shutdown(1);
+    console.log(`[preload] Datos leídos de PostgreSQL: ${classes.length} clases, ${allProducts.length} productos`);
+
+    const detailsById = new Map();
+    for (const id of productIds) {
+      detailsById.set(id, await fetchProductDetail(pool, id));
+    }
+
+    try {
+      validateCatalogData(classes, allProducts, slugs, detailsById);
+    } catch (err) {
+      await fail(`datos mínimos incompletos: ${err.message}`);
       return;
     }
 
-    console.log('[preload] Conectando Redis...');
-    await redisClient.connect();
-    console.log('[preload] Redis conectado');
+    await connectRedis();
 
-    await redisClient.setEx(CATALOG_KEY, CACHE_TTL_SECONDS, JSON.stringify(rows));
-    console.log(`[preload] Clave cargada: ${CATALOG_KEY} (catálogo completo, ${rows.length} filas)`);
+    const mainKeys = [];
+    let detailsLoaded = 0;
 
-    for (const row of rows) {
-      const key = productKey(row.id);
-      await redisClient.setEx(key, CACHE_TTL_SECONDS, JSON.stringify(row));
+    await writeCache(CACHE_KEYS.classesAll, classes);
+    mainKeys.push(CACHE_KEYS.classesAll);
+    console.log(`[preload] Key creada: ${CACHE_KEYS.classesAll}`);
+
+    await writeCache(CACHE_KEYS.productsAll, allProducts);
+    mainKeys.push(CACHE_KEYS.productsAll);
+    console.log(`[preload] Key creada: ${CACHE_KEYS.productsAll}`);
+
+    for (const slug of slugs) {
+      const byClass = await fetchProducts(pool, slug);
+      const key = CACHE_KEYS.productsByClass(slug);
+      await writeCache(key, byClass);
+      mainKeys.push(key);
+      console.log(`[preload] Key creada: ${key} (${byClass.length} productos)`);
     }
-    console.log(`[preload] Claves cargadas: ${rows.length} individuales (producto:{id})`);
-    console.log(`[preload] Total claves escritas: ${1 + rows.length}`);
-    console.log(`[preload] TTL aplicado: ${CACHE_TTL_SECONDS} segundos`);
 
-    const ttlCatalog = await redisClient.ttl(CATALOG_KEY);
-    console.log(`[preload] Verificación TTL ${CATALOG_KEY}: ${ttlCatalog}s restantes`);
+    for (const id of productIds) {
+      const detail = detailsById.get(id);
+      const key = CACHE_KEYS.productDetails(id);
+      await writeCache(key, detail);
+      detailsLoaded += 1;
+    }
+    mainKeys.push(`product:{id}:details (${detailsLoaded} keys)`);
 
+    const ttlSample = await redisClient.ttl(CACHE_KEYS.productsAll);
+
+    console.log('[preload] --- Resumen ---');
+    console.log(`[preload] Clases cargadas: ${classes.length}`);
+    console.log(`[preload] Productos cargados (products:all): ${allProducts.length}`);
+    console.log(`[preload] Detalles cargados (product:{id}:details): ${detailsLoaded}`);
+    console.log(`[preload] Keys por clase (products:class:{{slug}}): ${slugs.length}`);
+    console.log('[preload] Keys principales:');
+    for (const k of mainKeys) {
+      console.log(`[preload]   - ${k}`);
+    }
+    console.log(`[preload] TTL verificado en ${CACHE_KEYS.productsAll}: ${ttlSample}s`);
     console.log('[preload] Precarga completada correctamente');
+
     await shutdown(0);
   } catch (err) {
-    console.error('[preload] Fallo:', err.message);
+    console.error('[preload] Fallo inesperado:', err.message);
     await shutdown(1);
   }
 }

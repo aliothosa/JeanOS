@@ -12,7 +12,7 @@ COPY . .
 RUN npm run build:prod
 
 # ─── Fase 2: Nginx sirve los estáticos ───────────────────────────────────────
-FROM nginx:1.25-alpine
+FROM docker.io/library/nginx:1.25-alpine
 
 # Eliminar config por defecto
 RUN rm -rf /usr/share/nginx/html/*

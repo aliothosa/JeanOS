@@ -38,7 +38,7 @@ import { ComparadorComponent } from './components/comparador/comparador.componen
         <app-comparador
           *ngIf="view === 'comparador'"
           [selectedIds]="selectedIds"
-          (clearSelection)="selectedIds = []"
+          (clearSelection)="clearSelection()"
         ></app-comparador>
       </main>
     </div>
@@ -166,6 +166,10 @@ export class AppComponent {
   selectedIds: number[] = [];
 
   onSelectionChange(ids: number[]) {
-    this.selectedIds = ids;
+    this.selectedIds = [...ids];
+  }
+
+  clearSelection() {
+    this.selectedIds = [];
   }
 }
