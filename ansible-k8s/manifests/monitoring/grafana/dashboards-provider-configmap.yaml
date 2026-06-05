@@ -25,3 +25,11 @@ data:
         allowUiUpdates: true
         options:
           path: /var/lib/grafana/dashboards-backend
+      - name: jeanos-alerts
+        orgId: 1
+        folder: JeanOS
+        type: file
+        disableDeletion: false
+        allowUiUpdates: true
+        options:
+          path: /var/lib/grafana/dashboards-alerts

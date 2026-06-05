@@ -315,11 +315,12 @@ kubectl apply -R -f $M/tempo/
 kubectl apply -R -f $M/promtail/
 kubectl apply -f $M/prometheus/rbac.yaml -f $M/prometheus/pvc.yaml
 kubectl apply -f $M/prometheus/configmap.yaml -f $M/prometheus/deployment.yaml -f $M/prometheus/service.yaml
+kubectl apply -R -f $M/alertmanager/
 kubectl apply -f $M/grafana/pvc.yaml -f $M/grafana/datasources-configmap.yaml
-kubectl apply -f $M/grafana/deployment.yaml -f $M/grafana/service.yaml
+kubectl apply -R -f $M/grafana/
 ```
 
-> **Orden crítico:** Loki antes de Promtail; **Tempo antes de Grafana** (datasources referencian `tempo.monitoring.svc`); Prometheus después de Loki/Tempo si quieres targets `tempo` y `jeanos-backend` UP de inmediato.
+> **Orden crítico:** Loki antes de Promtail; **Tempo antes de Grafana** (datasources referencian `tempo.monitoring.svc`); Prometheus después de Loki/Tempo si quieres targets `tempo` y `jeanos-backend` UP de inmediato. Alertmanager antes (o junto) que Prometheus para que el target `alertmanager` y el envío de alertas queden UP.
 
 ---
 
@@ -554,7 +555,7 @@ Tras editar `prometheus/configmap.yaml`, reinicia Prometheus.
 | Componente | Ubicación en repo | Cuándo |
 |------------|-------------------|--------|
 | **OpenTelemetry en el backend** | — | Opcional; sin OTLP las trazas en Tempo estarán vacías (métricas `jeanos_*` siguen en Prometheus) |
-| **Alertmanager** | `examples/08-alertmanager.yaml` | Opcional |
+| **Alertmanager** | `ansible-k8s/manifests/monitoring/alertmanager/` | Operativo (reglas en `prometheus/configmap.yaml` → `alert.rules.yml`) |
 | **Tekton / ArgoCD** | `examples/tekton-argocd/` | Semana 4 |
 | **nfs-csi** | `examples/storageclass-nfs-csi/` | No necesario si usas `nfs-client` |
 

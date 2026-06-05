@@ -16,10 +16,25 @@ data:
       external_labels:
         cluster: jeanos
 
+    # Reglas de alerta (mismo ConfigMap, montado en /etc/prometheus).
+    rule_files:
+      - /etc/prometheus/alert.rules.yml
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ['alertmanager.monitoring.svc:9093']
+
     scrape_configs:
       - job_name: prometheus
         static_configs:
           - targets: ['localhost:9090']
+
+      - job_name: alertmanager
+        static_configs:
+          - targets: ['alertmanager.monitoring.svc:9093']
+            labels:
+              cluster: jeanos
 
       - job_name: node-exporter
         static_configs:
@@ -98,3 +113,86 @@ data:
             replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
           - target_label: cluster
             replacement: jeanos
+
+  alert.rules.yml: |
+    groups:
+      - name: jeanos-backend
+        rules:
+          - alert: BackendDown
+            expr: up{job="jeanos-backend"} == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Backend JeanOS caído"
+              description: "El target {{ $labels.job }} lleva >1m sin responder al scrape."
+
+          - alert: BackendHighErrorRate
+            expr: |
+              sum(rate(jeanos_http_requests_total{status_code=~"5.."}[5m]))
+              /
+              clamp_min(sum(rate(jeanos_http_requests_total[5m])), 0.001) > 0.05
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Tasa de errores 5xx alta (>5%)"
+              description: "El backend supera el 5% de respuestas 5xx durante 5m."
+
+          - alert: BackendHighLatencyP95
+            expr: |
+              histogram_quantile(0.95,
+                sum(rate(jeanos_http_request_duration_seconds_bucket[5m])) by (le)) > 1
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Latencia HTTP p95 alta (>1s)"
+              description: "La latencia p95 del backend supera 1s durante 5m."
+
+      - name: jeanos-kubernetes
+        rules:
+          - alert: PodNotReady
+            expr: |
+              sum by (namespace) (
+                kube_pod_status_phase{namespace="jeanos-shop", phase=~"Pending|Unknown|Failed"}
+              ) > 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pods no listos en {{ $labels.namespace }}"
+              description: "Hay pods en estado Pending/Unknown/Failed durante 5m."
+
+          - alert: PodHighMemoryUsage
+            expr: |
+              sum by (pod) (container_memory_working_set_bytes{namespace="jeanos-shop", container!="", container!="POD"})
+              /
+              clamp_min(sum by (pod) (kube_pod_container_resource_limits{namespace="jeanos-shop", resource="memory"}), 1) > 0.9
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Memoria del pod cerca del límite (>90%)"
+              description: "El pod {{ $labels.pod }} usa más del 90% de su límite de memoria durante 5m."
+
+      - name: jeanos-infra
+        rules:
+          - alert: NodeHighCpu
+            expr: |
+              100 - (avg by (instance) (rate(node_cpu_seconds_total{job="node-exporter", mode="idle"}[5m])) * 100) > 85
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "CPU del nodo alta (>85%)"
+              description: "El nodo {{ $labels.instance }} supera el 85% de CPU durante 5m."
+
+          - alert: TargetDown
+            expr: up == 0
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Target de scrape caído"
+              description: "El target {{ $labels.job }} ({{ $labels.instance }}) lleva >2m caído."

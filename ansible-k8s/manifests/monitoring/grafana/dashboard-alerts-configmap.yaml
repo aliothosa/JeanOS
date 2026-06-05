@@ -1,0 +1,263 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-alerts
+  namespace: monitoring
+  labels:
+    app: grafana
+data:
+  jeanos-alerts.json: |
+    {
+      "uid": "jeanos-alerts",
+      "title": "jeanOS — Alertas",
+      "tags": ["jeanos", "alertmanager", "alertas"],
+      "schemaVersion": 38,
+      "version": 1,
+      "refresh": "15s",
+      "time": { "from": "now-6h", "to": "now" },
+      "timezone": "browser",
+      "editable": true,
+      "panels": [
+        {
+          "id": 100,
+          "type": "row",
+          "title": "Estado general",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+          "collapsed": false
+        },
+        {
+          "id": 1,
+          "title": "Alertmanager UP",
+          "type": "stat",
+          "gridPos": { "x": 0, "y": 1, "w": 4, "h": 4 },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"] },
+            "colorMode": "background",
+            "graphMode": "none"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 1 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "up{job=\"alertmanager\"}",
+              "legendFormat": "alertmanager"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Alertas activas (firing)",
+          "type": "stat",
+          "gridPos": { "x": 4, "y": 1, "w": 5, "h": 4 },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"] },
+            "colorMode": "background",
+            "graphMode": "area"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 1 },
+                  { "color": "red", "value": 3 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(ALERTS{alertstate=\"firing\"}) or vector(0)",
+              "legendFormat": "firing"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Críticas",
+          "type": "stat",
+          "gridPos": { "x": 9, "y": 1, "w": 5, "h": 4 },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"] },
+            "colorMode": "background",
+            "graphMode": "none"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(ALERTS{alertstate=\"firing\", severity=\"critical\"}) or vector(0)",
+              "legendFormat": "critical"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Warnings",
+          "type": "stat",
+          "gridPos": { "x": 14, "y": 1, "w": 5, "h": 4 },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"] },
+            "colorMode": "background",
+            "graphMode": "none"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 1 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(ALERTS{alertstate=\"firing\", severity=\"warning\"}) or vector(0)",
+              "legendFormat": "warning"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "Notificaciones fallidas/s",
+          "type": "stat",
+          "gridPos": { "x": 19, "y": 1, "w": 5, "h": 4 },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"] },
+            "colorMode": "background",
+            "graphMode": "area"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 3,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 0.001 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(alertmanager_notifications_failed_total[5m])) or vector(0)",
+              "legendFormat": "failed"
+            }
+          ]
+        },
+        {
+          "id": 200,
+          "type": "row",
+          "title": "Detalle de alertas",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+          "collapsed": false
+        },
+        {
+          "id": 6,
+          "title": "Alertas activas (detalle)",
+          "type": "table",
+          "gridPos": { "x": 0, "y": 6, "w": 24, "h": 9 },
+          "options": { "showHeader": true },
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": { "Time": true, "Value": true, "__name__": true, "job": true, "instance": true },
+                "renameByName": {
+                  "alertname": "Alerta",
+                  "severity": "Severidad",
+                  "namespace": "Namespace",
+                  "pod": "Pod",
+                  "alertstate": "Estado"
+                }
+              }
+            }
+          ],
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "ALERTS{alertstate=\"firing\"}",
+              "format": "table",
+              "instant": true
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "title": "Alertas activas por nombre (histórico)",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 15, "w": 12, "h": 8 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "lineWidth": 2, "fillOpacity": 20, "stacking": { "mode": "normal" }, "drawStyle": "bars" }
+            }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(ALERTS{alertstate=\"firing\"}) by (alertname)",
+              "legendFormat": "{{alertname}}"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "title": "Notificaciones Alertmanager/s por integración",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 15, "w": 12, "h": 8 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "lineWidth": 2, "fillOpacity": 10 }
+            }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(alertmanager_notifications_total[5m])) by (integration)",
+              "legendFormat": "{{integration}}"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(alertmanager_notifications_failed_total[5m])) by (integration)",
+              "legendFormat": "failed {{integration}}"
+            }
+          ]
+        }
+      ]
+    }

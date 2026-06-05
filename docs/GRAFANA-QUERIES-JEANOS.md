@@ -86,6 +86,41 @@ de ConfigMap ya montado.
 > Los paneles de recursos del pod requieren el job `kubernetes-cadvisor` de Prometheus
 > (métricas `container_*`). Ver `docs/semana-3-monitoring.md`.
 
+### 3. Dashboard de alertas
+
+Dashboard para el estado de alertas de Prometheus + Alertmanager:
+
+- **Ruta en repo:** `ansible-k8s/manifests/monitoring/grafana/dashboard-alerts-configmap.yaml`
+- **Título en UI:** `jeanOS — Alertas`
+- **UID:** `jeanos-alerts`
+- **Carpeta:** Dashboards → **JeanOS**
+
+**Paneles incluidos:**
+
+| Sección | Paneles |
+|---------|---------|
+| Estado general | Alertmanager UP, alertas firing, críticas, warnings, notificaciones fallidas/s |
+| Detalle | Tabla de alertas activas, histórico por nombre, notificaciones por integración |
+
+**Queries embebidas (Prometheus):**
+
+```promql
+up{job="alertmanager"}
+sum(ALERTS{alertstate="firing"}) or vector(0)
+sum(ALERTS{alertstate="firing", severity="critical"}) or vector(0)
+sum(ALERTS{alertstate="firing"}) by (alertname)
+sum(rate(alertmanager_notifications_total[5m])) by (integration)
+sum(rate(alertmanager_notifications_failed_total[5m])) by (integration)
+```
+
+Requiere Alertmanager desplegado (`ansible-k8s/manifests/monitoring/alertmanager/`) y
+el bloque `alerting:` + `rule_files:` en `prometheus/configmap.yaml`. Las reglas activas
+están en la clave `alert.rules.yml` del ConfigMap `prometheus-config`:
+`BackendDown`, `BackendHighErrorRate`, `BackendHighLatencyP95`, `PodNotReady`,
+`PodHighMemoryUsage`, `NodeHighCpu`, `TargetDown`.
+
+UI de Alertmanager: `http://<IP-NODO>:30903`. Reglas en Prometheus: pestaña **Alerts**.
+
 ### 2. Dashboards comunitarios (importar por ID)
 
 Desde la presentación del bootcamp — Grafana → **Dashboards → Import**:
