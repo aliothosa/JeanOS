@@ -58,6 +58,34 @@ kubectl rollout restart deployment/grafana -n monitoring
 
 Documentación de despliegue: `docs/semana-3-monitoring.md`.
 
+### 2. Dashboard del backend (API JeanOS)
+
+Dashboard dedicado a las métricas de aplicación del backend (Express + `prom-client`):
+
+- **Ruta en repo:** `ansible-k8s/manifests/monitoring/grafana/dashboard-backend-configmap.yaml`
+- **Título en UI:** `jeanOS — Backend API`
+- **UID:** `jeanos-backend-api`
+- **Carpeta:** Dashboards → **JeanOS**
+- **Variable de plantilla:** `route` (multi-selección por ruta)
+
+**Paneles incluidos:**
+
+| Sección | Paneles |
+|---------|---------|
+| Estado y tráfico HTTP | Backend UP, req/s total, % éxito 2xx, errores 5xx/s, latencia p95, req/s por ruta, req/s por código |
+| Latencia | p50/p95/p99 global, p95 por ruta |
+| Caché | Ratio de acierto, Redis hits vs PostgreSQL misses por ruta |
+| Comparador (`/api/compare`) | req/s por fuente, errores 4xx/5xx, latencia p95 por fuente |
+| Recursos del pod (cAdvisor) | CPU por pod backend, memoria por pod backend |
+
+Este dashboard se provisiona desde su propio ConfigMap (`grafana-dashboard-backend`),
+montado en `/var/lib/grafana/dashboards-backend` con un provider independiente, para
+evitar el crash `not a directory` que provoca usar `subPath` dentro de un directorio
+de ConfigMap ya montado.
+
+> Los paneles de recursos del pod requieren el job `kubernetes-cadvisor` de Prometheus
+> (métricas `container_*`). Ver `docs/semana-3-monitoring.md`.
+
 ### 2. Dashboards comunitarios (importar por ID)
 
 Desde la presentación del bootcamp — Grafana → **Dashboards → Import**:

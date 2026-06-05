@@ -63,6 +63,8 @@ spec:
               mountPath: /etc/grafana/provisioning/dashboards
             - name: dashboards
               mountPath: /var/lib/grafana/dashboards
+            - name: dashboards-backend
+              mountPath: /var/lib/grafana/dashboards-backend
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -76,3 +78,6 @@ spec:
         - name: dashboards
           configMap:
             name: grafana-dashboards
+        - name: dashboards-backend
+          configMap:
+            name: grafana-dashboard-backend
