@@ -6,7 +6,7 @@ metadata:
   labels:
     app: jeanos-backend
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: jeanos-backend

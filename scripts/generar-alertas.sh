@@ -23,6 +23,12 @@ BACKEND_REPLICAS="${BACKEND_REPLICAS:-2}"
 STRESS_IMAGE="${STRESS_IMAGE:-progrium/stress}"
 STRESS_SECONDS="${STRESS_SECONDS:-600}"
 
+# ArgoCD: con selfHeal=true revierte el "scale 0" del backend antes de que la
+# alerta BackendDown cumpla su 'for', dejándola eternamente en Pending. El script
+# pausa el auto-sync mientras dura la demo y lo reactiva en 'restore'.
+NS_ARGO="${NS_ARGO:-argocd}"
+ARGO_APP="${ARGO_APP:-jeanos-shop-gitops}"
+
 # Nombres de los pods efímeros que crea el script (para poder limpiarlos).
 POD_BROKEN="alert-demo-broken"
 POD_CPU="alert-demo-cpu"
@@ -36,7 +42,29 @@ need_kubectl() {
   command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl no está en el PATH"; exit 1; }
 }
 
+argo_app_exists() {
+  kubectl get application "${ARGO_APP}" -n "${NS_ARGO}" >/dev/null 2>&1
+}
+
+argo_pause() {
+  if argo_app_exists; then
+    c_yellow "==> Pausando auto-sync de ArgoCD (${ARGO_APP}) para que no revierta el scale"
+    kubectl patch application "${ARGO_APP}" -n "${NS_ARGO}" --type merge \
+      -p '{"spec":{"syncPolicy":{"automated":null}}}' >/dev/null
+  fi
+}
+
+argo_resume() {
+  if argo_app_exists; then
+    c_yellow "==> Reactivando auto-sync de ArgoCD (${ARGO_APP})"
+    kubectl patch application "${ARGO_APP}" -n "${NS_ARGO}" --type merge \
+      -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}' >/dev/null
+  fi
+}
+
 trigger() {
+  argo_pause
+
   c_blue "==> 1/4 BackendDown + TargetDown: escalando ${BACKEND_DEPLOY} a 0"
   kubectl scale deployment/"${BACKEND_DEPLOY}" -n "${NS_APP}" --replicas=0
 
@@ -89,6 +117,8 @@ restore() {
   c_blue "==> Eliminando pods de demo"
   kubectl delete pod "${POD_BROKEN}" "${POD_CPU}" "${POD_MEM}" \
     -n "${NS_APP}" --ignore-not-found
+
+  argo_resume
 
   c_green "Estado normal restaurado. Las alertas pasarán a 'resolved' tras su intervalo."
 }
