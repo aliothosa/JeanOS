@@ -70,8 +70,8 @@ spec:
               echo "Redis listo."
 
         - name: preload-redis
-          image: docker.io/emmanuelmal2/jeanos-backend:v1
-          imagePullPolicy: IfNotPresent
+          image: docker.io/emmanuelmal2/jeanos-backend:v2
+          imagePullPolicy: Always
           command: ["node", "scripts/preload-redis.js"]
           env:
             - name: DB_HOST
@@ -102,8 +102,8 @@ spec:
 
       containers:
         - name: backend
-          image: docker.io/emmanuelmal2/jeanos-backend:v1
-          imagePullPolicy: IfNotPresent
+          image: docker.io/emmanuelmal2/jeanos-backend:v2
+          imagePullPolicy: Always
           ports:
             - containerPort: 3000
               name: http
