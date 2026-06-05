@@ -14,6 +14,8 @@ const {
   fetchProductDetail,
 } = require('./lib/catalog');
 
+const COMPARE_PRODUCT_COUNT = 3;
+
 const register = new client.Registry();
 client.collectDefaultMetrics({ register });
 
@@ -150,14 +152,16 @@ function buildComparePayload(productRows, specRows, requestOrder) {
     .sort((a, b) => a.sort_order - b.sort_order)
     .map(({ sort_order, ...rest }) => rest);
 
-  const [a, b] = products;
-  const cheapest = a.precio <= b.precio ? a : b;
+  const prices = products.map((p) => p.precio);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const cheapest = products.find((p) => p.precio === minPrice) ?? products[0];
 
   return {
     class: classInfo,
     products,
     specs,
-    price_difference: Math.abs(a.precio - b.precio),
+    price_difference: maxPrice - minPrice,
     cheapest_product: {
       id: cheapest.id,
       nombre: cheapest.nombre,
@@ -429,45 +433,45 @@ app.post('/api/compare', async (req, res) => {
   try {
     const { ids } = req.body;
 
-    if (!Array.isArray(ids) || ids.length !== 2) {
+    if (!Array.isArray(ids) || ids.length !== COMPARE_PRODUCT_COUNT) {
       finishCompare(400, 'none');
       return res.status(400).json({
-        error: 'Debes enviar exactamente 2 IDs en el campo ids',
-        code: 'COMPARE_EXACTLY_TWO_IDS',
-        details: { received_count: Array.isArray(ids) ? ids.length : 0 },
-        example: { ids: [1, 2] },
+        error: `Debes enviar exactamente ${COMPARE_PRODUCT_COUNT} IDs en el campo ids`,
+        code: 'COMPARE_INVALID_COUNT',
+        details: {
+          expected_count: COMPARE_PRODUCT_COUNT,
+          received_count: Array.isArray(ids) ? ids.length : 0,
+        },
+        example: { ids: [1, 2, 3] },
       });
     }
 
-    const idA = Number(ids[0]);
-    const idB = Number(ids[1]);
+    const numericIds = ids.map((id) => Number(id));
+    const allValid = numericIds.every(
+      (id) => Number.isInteger(id) && id > 0,
+    );
 
-    if (
-      !Number.isInteger(idA) ||
-      !Number.isInteger(idB) ||
-      idA <= 0 ||
-      idB <= 0
-    ) {
+    if (!allValid) {
       finishCompare(400, 'none');
       return res.status(400).json({
-        error: 'Los IDs deben ser dos enteros positivos',
+        error: `Los IDs deben ser ${COMPARE_PRODUCT_COUNT} enteros positivos`,
         code: 'COMPARE_INVALID_IDS',
         details: { ids },
       });
     }
 
-    if (idA === idB) {
+    if (new Set(numericIds).size !== COMPARE_PRODUCT_COUNT) {
       finishCompare(400, 'none');
       return res.status(400).json({
-        error: 'Los IDs deben ser dos enteros positivos distintos',
+        error: `Los IDs deben ser ${COMPARE_PRODUCT_COUNT} enteros positivos distintos`,
         code: 'COMPARE_INVALID_IDS',
         details: { ids },
       });
     }
 
-    const orderedIds = [idA, idB].sort((a, b) => a - b);
-    const requestOrder = [idA, idB];
-    const cacheKey = CACHE_KEYS.compare(orderedIds[0], orderedIds[1]);
+    const orderedIds = [...numericIds].sort((a, b) => a - b);
+    const requestOrder = numericIds;
+    const cacheKey = CACHE_KEYS.compare(...orderedIds);
     const cached = await redisGet(cacheKey);
 
     if (cached) {
@@ -496,9 +500,9 @@ app.post('/api/compare', async (req, res) => {
         cp.nombre AS clase_nombre
       FROM productos p
       INNER JOIN clases_producto cp ON cp.id = p.clase_id
-      WHERE p.id = $1 OR p.id = $2;
+      WHERE p.id = ANY($1::int[]);
       `,
-      orderedIds,
+      [orderedIds],
     );
 
     const foundIds = productResult.rows.map((r) => r.id);
@@ -549,11 +553,11 @@ app.post('/api/compare', async (req, res) => {
       FROM spec_definitions sd
       LEFT JOIN producto_specs ps
         ON ps.spec_definition_id = sd.id
-        AND ps.producto_id IN ($1, $2)
-      WHERE sd.clase_id = $3
+        AND ps.producto_id = ANY($1::int[])
+      WHERE sd.clase_id = $2
       ORDER BY sd.sort_order;
       `,
-      [orderedIds[0], orderedIds[1], classIds[0]],
+      [orderedIds, classIds[0]],
     );
 
     const comparison = buildComparePayload(

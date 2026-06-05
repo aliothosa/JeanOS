@@ -3,6 +3,9 @@ import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
 
+/** Número exacto de productos que acepta el comparador (misma clase). */
+export const COMPARE_PRODUCT_COUNT = 3;
+
 /** Respuesta envoltorio del backend (Redis / PostgreSQL). */
 export interface CachedApiResponse<T> {
   source: 'redis' | 'postgresql';

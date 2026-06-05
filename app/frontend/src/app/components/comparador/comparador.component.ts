@@ -1,10 +1,13 @@
 import { Component, Input, Output, EventEmitter, OnChanges, SimpleChanges } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { forkJoin, of } from 'rxjs';
+import { catchError } from 'rxjs/operators';
 import {
   ProductService,
   CompareApiResponse,
   CompareSpecRow,
   ProductoDetalle,
+  COMPARE_PRODUCT_COUNT,
 } from '../../services/product.service';
 
 @Component({
@@ -25,32 +28,38 @@ import {
         <div class="empty-icon">⬡</div>
         <div class="empty-title">Sin productos seleccionados</div>
         <div class="empty-sub">
-          Ve al catálogo y selecciona <strong>2 productos de la misma clase</strong> para comparar especificaciones.
+          Ve al catálogo y selecciona <strong>{{ compareCount }} productos de la misma clase</strong> para comparar especificaciones.
         </div>
       </div>
 
-      <!-- Más de 2 -->
-      <div class="error" *ngIf="selectedIds.length > 2 && !loading">
-        ⚠ Solo puedes comparar exactamente 2 productos. Tienes {{ selectedIds.length }} seleccionados; usa «Limpiar selección».
+      <!-- Más del máximo -->
+      <div class="error" *ngIf="selectedIds.length > compareCount && !loading">
+        ⚠ Solo puedes comparar exactamente {{ compareCount }} productos. Tienes {{ selectedIds.length }} seleccionados; usa «Limpiar selección».
         <button type="button" (click)="onClear()">Limpiar</button>
       </div>
 
-      <!-- 1 producto -->
-      <div class="partial" *ngIf="selectedIds.length === 1 && !loading && !error">
-        <div class="partial-label">1/2 productos · falta uno de la misma clase</div>
-        <div class="partial-card" *ngIf="partialProduct; else partialLoading">
-          <span class="partial-class">{{ partialProduct.clase.nombre }}</span>
-          <div class="partial-name">{{ partialProduct.nombre }}</div>
-          <div class="partial-meta">{{ partialProduct.marca }} · {{ partialProduct.modelo }}</div>
-          <div class="partial-price">\${{ formatPrice(partialProduct.precio) }}</div>
+      <!-- 1 o 2 productos (parcial) -->
+      <div class="partial" *ngIf="selectedIds.length > 0 && selectedIds.length < compareCount && !loading && !error">
+        <div class="partial-label">
+          {{ selectedIds.length }}/{{ compareCount }} productos · selecciona {{ compareCount - selectedIds.length }} más de la misma clase
+        </div>
+        <div class="partial-grid" *ngIf="partialProducts.length > 0; else partialLoading">
+          <div class="partial-card" *ngFor="let p of partialProducts">
+            <span class="partial-class">{{ p.clase.nombre }}</span>
+            <div class="partial-name">{{ p.nombre }}</div>
+            <div class="partial-meta">{{ p.marca }} · {{ p.modelo }}</div>
+            <div class="partial-price">\${{ formatPrice(p.precio) }}</div>
+          </div>
         </div>
         <ng-template #partialLoading>
           <div class="loading inline-loading">
             <div class="spinner"></div>
-            Cargando producto...
+            Cargando productos...
           </div>
         </ng-template>
-        <p class="partial-hint">Vuelve al catálogo y elige otro producto de <strong>{{ partialProduct?.clase?.nombre ?? 'la misma clase' }}</strong>.</p>
+        <p class="partial-hint" *ngIf="partialProducts.length > 0">
+          Vuelve al catálogo y elige otro producto de <strong>{{ partialProducts[0].clase?.nombre ?? 'la misma clase' }}</strong>.
+        </p>
       </div>
 
       <!-- Loading -->
@@ -65,13 +74,13 @@ import {
       </div>
 
       <!-- Error API -->
-      <div class="error" *ngIf="error && selectedIds.length <= 2 && !loading">
+      <div class="error" *ngIf="error && selectedIds.length <= compareCount && !loading">
         ⚠ {{ error }}
-        <button type="button" (click)="retryCompare()" *ngIf="selectedIds.length === 2">Reintentar</button>
+        <button type="button" (click)="retryCompare()" *ngIf="selectedIds.length === compareCount">Reintentar</button>
       </div>
 
       <!-- Resultado -->
-      <div class="result" *ngIf="result && !loading && selectedIds.length === 2">
+      <div class="result" *ngIf="result && !loading && selectedIds.length === compareCount">
         <h2 class="compare-title">
           Comparación · {{ result.data.class.nombre }}
           <span class="compare-slug">{{ result.data.class.slug }}</span>
@@ -109,7 +118,7 @@ import {
         </div>
 
         <div class="diff-row">
-          <span class="diff-label">Diferencia de precio:</span>
+          <span class="diff-label">Rango de precio (max − min):</span>
           <span class="diff-value">\${{ formatPrice(result.data.price_difference) }}</span>
         </div>
 
@@ -120,8 +129,7 @@ import {
               <thead>
                 <tr>
                   <th>Especificación</th>
-                  <th>{{ productColumnLabel(0) }}</th>
-                  <th>{{ productColumnLabel(1) }}</th>
+                  <th *ngFor="let p of result.data.products; let i = index">{{ productColumnLabel(i) }}</th>
                 </tr>
               </thead>
               <tbody>
@@ -130,8 +138,10 @@ import {
                     <span class="spec-label">{{ row.label }}</span>
                     <span class="spec-unit" *ngIf="row.unit">{{ row.unit }}</span>
                   </td>
-                  <td [class.spec-diff]="!specValuesEqual(row)">{{ formatSpecCell(row, 0) }}</td>
-                  <td [class.spec-diff]="!specValuesEqual(row)">{{ formatSpecCell(row, 1) }}</td>
+                  <td
+                    *ngFor="let p of result.data.products; let i = index"
+                    [class.spec-diff]="specCellDiffers(row, i)"
+                  >{{ formatSpecCell(row, i) }}</td>
                 </tr>
               </tbody>
             </table>
@@ -212,13 +222,22 @@ import {
       letter-spacing: 0.05em;
     }
 
+    .partial-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    @media (max-width: 900px) {
+      .partial-grid { grid-template-columns: 1fr; }
+    }
+
     .partial-card {
       background: #0f1017;
       border: 1px solid #1c1e2a;
       border-radius: 10px;
       padding: 18px;
-      margin-bottom: 12px;
-      max-width: 360px;
     }
 
     .partial-class {
@@ -391,12 +410,12 @@ import {
 
     .products-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 8px;
       margin-bottom: 16px;
     }
 
-    @media (max-width: 640px) {
+    @media (max-width: 900px) {
       .products-grid { grid-template-columns: 1fr; }
     }
 
@@ -561,8 +580,10 @@ export class ComparadorComponent implements OnChanges {
   @Input() selectedIds: number[] = [];
   @Output() clearSelection = new EventEmitter<void>();
 
+  readonly compareCount = COMPARE_PRODUCT_COUNT;
+
   result: CompareApiResponse | null = null;
-  partialProduct: ProductoDetalle | null = null;
+  partialProducts: ProductoDetalle[] = [];
   loading = false;
   loadingMode: 'partial' | 'compare' = 'compare';
   error = '';
@@ -584,11 +605,11 @@ export class ComparadorComponent implements OnChanges {
   private onSelectionUpdated() {
     this.result = null;
     this.error = '';
-    this.partialProduct = null;
+    this.partialProducts = [];
 
     const count = this.selectedIds.length;
 
-    if (count > 2) {
+    if (count > this.compareCount) {
       this.loading = false;
       return;
     }
@@ -598,21 +619,26 @@ export class ComparadorComponent implements OnChanges {
       return;
     }
 
-    if (count === 1) {
-      this.loadPartialProduct();
+    if (count < this.compareCount) {
+      this.loadPartialProducts();
       return;
     }
 
     this.runCompare();
   }
 
-  private loadPartialProduct() {
-    const id = this.selectedIds[0];
+  private loadPartialProducts() {
     this.loading = true;
     this.loadingMode = 'partial';
-    this.svc.getProduct(id).subscribe({
-      next: (r) => {
-        this.partialProduct = r.data;
+    const requests = this.selectedIds.map((id) =>
+      this.svc.getProduct(id).pipe(catchError(() => of(null))),
+    );
+
+    forkJoin(requests).subscribe({
+      next: (responses) => {
+        this.partialProducts = responses
+          .map((r) => r?.data)
+          .filter((p): p is ProductoDetalle => p != null);
         this.loading = false;
       },
       error: (e) => {
@@ -623,7 +649,7 @@ export class ComparadorComponent implements OnChanges {
   }
 
   runCompare() {
-    if (this.selectedIds.length !== 2) {
+    if (this.selectedIds.length !== this.compareCount) {
       return;
     }
 
@@ -634,7 +660,7 @@ export class ComparadorComponent implements OnChanges {
     this.lastSource = 'postgresql';
     const t0 = performance.now();
 
-    const ids = [this.selectedIds[0], this.selectedIds[1]];
+    const ids = [...this.selectedIds];
 
     this.svc.compare(ids).subscribe({
       next: (r) => {
@@ -656,7 +682,7 @@ export class ComparadorComponent implements OnChanges {
 
   resetResult() {
     this.result = null;
-    if (this.selectedIds.length === 2) {
+    if (this.selectedIds.length === this.compareCount) {
       this.runCompare();
     }
   }
@@ -697,22 +723,24 @@ export class ComparadorComponent implements OnChanges {
     return `${value}${unit}`;
   }
 
-  specValuesEqual(row: CompareSpecRow): boolean {
-    const a = this.specValueFor(row, 0);
-    const b = this.specValueFor(row, 1);
-    if (a == null && b == null) {
-      return true;
+  specCellDiffers(row: CompareSpecRow, productIndex: number): boolean {
+    const productCount = this.result?.data?.products?.length ?? 0;
+    if (productCount < 2) {
+      return false;
     }
-    if (typeof a === 'boolean' || typeof b === 'boolean') {
-      return a === b;
-    }
-    return String(a) === String(b);
+    const values = Array.from({ length: productCount }, (_, i) =>
+      this.specValueFor(row, i),
+    );
+    const current = values[productIndex];
+    const normalized = values.map((v) => (v == null ? '' : String(v)));
+    const currentNorm = current == null ? '' : String(current);
+    return normalized.some((v, i) => i !== productIndex && v !== currentNorm);
   }
 
   onClear() {
     this.clearSelection.emit();
     this.result = null;
-    this.partialProduct = null;
+    this.partialProducts = [];
     this.error = '';
     this.loading = false;
   }

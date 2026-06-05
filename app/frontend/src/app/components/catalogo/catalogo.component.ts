@@ -7,6 +7,7 @@ import {
   Producto,
   ClaseProducto,
   ProductSpec,
+  COMPARE_PRODUCT_COUNT,
 } from '../../services/product.service';
 
 @Component({
@@ -56,14 +57,14 @@ import {
 
       <div class="hint" *ngIf="!loading && !error">
         <ng-container *ngIf="selectedIds.length === 0">
-          Selecciona 2 productos de la misma clase para comparar
+          Selecciona {{ compareCount }} productos de la misma clase para comparar
         </ng-container>
-        <ng-container *ngIf="selectedIds.length === 1">
-          1/2 seleccionado · elige otro producto de
+        <ng-container *ngIf="selectedIds.length > 0 && selectedIds.length < compareCount">
+          {{ selectedIds.length }}/{{ compareCount }} seleccionados · elige otro producto de
           <strong>{{ lockedClassLabel() }}</strong>
         </ng-container>
-        <ng-container *ngIf="selectedIds.length === 2">
-          <span class="hint-ready">✓ 2 productos listos — ve al comparador</span>
+        <ng-container *ngIf="selectedIds.length === compareCount">
+          <span class="hint-ready">✓ {{ compareCount }} productos listos — ve al comparador</span>
         </ng-container>
       </div>
 
@@ -420,7 +421,8 @@ export class CatalogoComponent implements OnInit {
   source = '';
   ttl: number | null = null;
 
-  private readonly maxSelection = 2;
+  readonly compareCount = COMPARE_PRODUCT_COUNT;
+  private readonly maxSelection = COMPARE_PRODUCT_COUNT;
   private readonly maxSpecsOnCard = 3;
 
   constructor(private svc: ProductService) {}

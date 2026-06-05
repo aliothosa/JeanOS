@@ -9,7 +9,7 @@ const CACHE_KEYS = {
   productsAll: 'products:all',
   productsByClass: (slug) => `products:class:${slug}`,
   productDetails: (id) => `product:${id}:details`,
-  compare: (id1, id2) => `compare:${id1}:${id2}`,
+  compare: (...ids) => `compare:${[...ids].sort((a, b) => a - b).join(':')}`,
 };
 
 function normalizeClassSlug(raw) {

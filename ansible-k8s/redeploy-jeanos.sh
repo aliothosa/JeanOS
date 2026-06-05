@@ -207,6 +207,7 @@ FRONT_NAME="${DOCKER_FRONTEND_IMAGE:-jeanos-frontend}"
 NODE_PORT="${FRONTEND_NODE_PORT:-30080}"
 CMP_ID_1="${COMPARE_ID_1:-1}"
 CMP_ID_2="${COMPARE_ID_2:-2}"
+CMP_ID_3="${COMPARE_ID_3:-3}"
 CLASS_FILTER="${PRODUCTS_CLASS_FILTER:-gpu}"
 SEED_SQL="${SEED_SQL:-${SCRIPT_DIR}/seed-productos.sql}"
 BUILD_SCRIPT="${BUILD_SCRIPT:-}"
@@ -339,7 +340,7 @@ if bool "$RUN_SMOKE_TESTS" && ! $DRY_RUN; then
       echo ''
       curl -sf -X POST http://jeanos-backend-service:3000/api/compare \
         -H 'Content-Type: application/json' \
-        -d '{\"ids\":[${CMP_ID_1},${CMP_ID_2}]}' | head -c 400
+        -d '{\"ids\":[${CMP_ID_1},${CMP_ID_2},${CMP_ID_3}]}' | head -c 400
       echo ''
       curl -sf http://jeanos-frontend-service/api/classes | head -c 200
       echo ''
