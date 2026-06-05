@@ -6,7 +6,7 @@ metadata:
   labels:
     app: jeanos-frontend
 spec:
-  replicas: 2
+  replicas: 3
   selector:
     matchLabels:
       app: jeanos-frontend
@@ -17,8 +17,8 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: docker.io/emmanuelmal2/jeanos-frontend:v1
-          imagePullPolicy: IfNotPresent
+          image: docker.io/emmanuelmal2/jeanos-frontend:v2
+          imagePullPolicy: Always
           ports:
             - containerPort: 80
 
